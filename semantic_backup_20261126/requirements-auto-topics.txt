@@ -1,0 +1,10 @@
+# Compatible add-on dependency set.
+# Keep YAKE at the exact version required by scientific-intelligence-lab 1.0.0.
+# Restore umap-learn 0.6.0, which was present before the first add-on installer
+# downgraded it. Do not change the project's core environment beyond these pins.
+igraph==1.0.0
+leidenalg==0.12.0
+yake==0.7.3
+umap-learn==0.6.0
+streamlit>=1.39,<2
+plotly>=5.24,<7

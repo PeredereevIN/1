@@ -1,0 +1,2 @@
+Topic Naming RU 1.2.0
+Deterministic bilingual topic naming; evidence-aware candidate ranking; title-faithful support; no LLM or external translation service.

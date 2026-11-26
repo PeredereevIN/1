@@ -1,0 +1,4 @@
+# Official Windows x64 / Python 3.12 CUDA 13.2 wheel.
+# Prefer INSTALL.ps1, which installs this before the application dependencies.
+--index-url https://download.pytorch.org/whl/cu132
+torch==2.14.0

@@ -1,0 +1,23 @@
+SCIENTIFIC INTELLIGENCE LAB — GENERAL CORPUS EDITION
+
+This package is intentionally clean: no historical corpus, embeddings, cluster assignments or experiment outputs are included.
+
+1. Install (Windows / Python 3.12):
+   Set-ExecutionPolicy -Scope Process Bypass
+   .\INSTALL.ps1
+
+2. Download a randomized 1,870-paper arXiv sample:
+   .\DOWNLOAD_RANDOM_ARXIV.ps1
+   The script stores a seeded random topic distribution and resumes interrupted downloads.
+
+3. Process and cluster the corpus:
+   .\RUN_GENERAL_ANALYTICS.ps1 -Device cuda -Method hdbscan
+   or
+   .\RUN_GENERAL_ANALYTICS.ps1 -Device cuda -Method graph
+
+4. Start the dashboard:
+   .\START_DASHBOARD.ps1
+
+The dashboard includes SPECTER maps, semantic community names, representative papers, document kNN graphs, Louvain communities and quality diagnostics.
+After clustering, open "Тематические профили" and generate evidence-based group names for the current run.
+See README.md for methodology and caveats.

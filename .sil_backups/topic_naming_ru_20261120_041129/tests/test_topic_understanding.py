@@ -1,0 +1,125 @@
+import unittest
+from pathlib import Path
+import tempfile
+import pandas as pd
+
+from topic_understanding import ClusterTopicUnderstanding, TopicConfig, BOUNDARY
+
+
+class TopicUnderstandingTests(unittest.TestCase):
+    def test_extracts_explicit_abstract_and_stops_before_introduction(self):
+        engine = ClusterTopicUnderstanding()
+        raw = """Paper title\nJane Doe\nDepartment of Computer Science\nAbstract\nWe study speech recognition and acoustic modeling for multilingual audio.\nOur method improves word error rate.\n1 Introduction\nThe introduction contains unrelated graph algorithms and treewidth."""
+        abstract, mode = engine._extract_abstract(raw, "Paper title")
+        self.assertEqual(mode, "explicit_abstract")
+        self.assertIn("speech recognition", abstract.lower())
+        self.assertNotIn("treewidth", abstract.lower())
+
+    def test_aliases_canonicalize_to_one_topic(self):
+        self.assertEqual(ClusterTopicUnderstanding._canonical("ASR"), "speech recognition")
+        self.assertEqual(ClusterTopicUnderstanding._canonical("VLMs"), "vision-language models")
+        self.assertEqual(ClusterTopicUnderstanding._canonical("GRPO"), "group relative policy optimization")
+
+    def test_phrase_extraction_does_not_cross_title_abstract_boundary(self):
+        engine = ClusterTopicUnderstanding()
+        phrases = list(engine._segments(f"speech recognition {BOUNDARY} acoustic models"))
+        self.assertIn("speech recognition", phrases)
+        self.assertIn("acoustic models", phrases)
+        self.assertNotIn(f"recognition {BOUNDARY} acoustic", phrases)
+
+    def test_ignores_noise_assignments(self):
+        assignments = pd.DataFrame([
+            {"document_id": "1", "group_id": "A", "title": "Speech Recognition", "domain": "nlp"},
+            {"document_id": "2", "group_id": "A", "title": "Acoustic Speech Recognition", "domain": "nlp"},
+            {"document_id": "3", "group_id": "NOISE", "title": "Unrelated graph paper", "domain": "ml"},
+        ])
+        texts = pd.DataFrame([
+            {"document_id": "1", "text": "Abstract\nWe study speech recognition and acoustic models for audio.\n1 Introduction\nGraph algorithms."},
+            {"document_id": "2", "text": "Abstract\nSpeech recognition models use acoustic features and audio signals.\n1 Introduction\nGraph theory."},
+            {"document_id": "3", "text": "Abstract\nA completely different topic.\n1 Introduction"},
+        ])
+        engine = ClusterTopicUnderstanding(TopicConfig(min_primary_prevalence=0.1, min_secondary_prevalence=0.1))
+        result = engine.fit_predict(assignments, texts)
+        self.assertEqual(result["profiles"]["group_id"].tolist(), ["A"])
+        noise = result["documents"].set_index("document_id").loc["3"]
+        self.assertEqual(noise["automatic_label"], "Unassigned noise")
+
+    def test_topic_profile_is_derived_from_document_content_not_cluster_id(self):
+        rows = []
+        texts = []
+        for i in range(8):
+            rows.append({"document_id": f"s{i}", "group_id": "arbitrary_7", "title": f"Speech Recognition with Acoustic Models {i}"})
+            texts.append({"document_id": f"s{i}", "text": "Abstract\nSpeech recognition uses acoustic models for audio signals and word error rate evaluation.\n1 Introduction\nOther material."})
+        for i in range(8):
+            rows.append({"document_id": f"g{i}", "group_id": "arbitrary_2", "title": f"Graph Algorithms and Shortest Paths {i}"})
+            texts.append({"document_id": f"g{i}", "text": "Abstract\nGraph algorithms study shortest paths, graph traversal and vertex connectivity.\n1 Introduction\nOther material."})
+        engine = ClusterTopicUnderstanding(TopicConfig(min_primary_prevalence=0.1, min_secondary_prevalence=0.08, min_subtopic_group_size=100))
+        result = engine.fit_predict(pd.DataFrame(rows), pd.DataFrame(texts))
+        profiles = result["profiles"].set_index("group_id")
+        self.assertIn("speech recognition", profiles.loc["arbitrary_7", "automatic_label"].lower())
+        self.assertIn("graph", profiles.loc["arbitrary_2", "automatic_label"].lower())
+        self.assertNotEqual(profiles.loc["arbitrary_7", "automatic_label"], profiles.loc["arbitrary_2", "automatic_label"])
+
+
+    def test_canonical_abstract_is_prioritized_over_pdf_body(self):
+        from topic_understanding import load_document_texts
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "doc-1").mkdir()
+            (root / "doc-1" / "document.txt").write_text(
+                "Abstract\nPDF extraction contains unrelated graph algorithms.\n1 Introduction\nMore text.",
+                encoding="utf-8",
+            )
+            assignments = pd.DataFrame([{"document_id": "doc-1"}])
+            texts = load_document_texts(
+                assignments,
+                root,
+                abstract_by_id={"doc-1": "We study molecular sequence alignment and protein structure prediction."},
+            )
+            abstract, mode = ClusterTopicUnderstanding()._extract_abstract(texts.iloc[0]["text"], "A title")
+            self.assertEqual(mode, "explicit_abstract")
+            self.assertIn("molecular sequence alignment", abstract.lower())
+            self.assertNotIn("unrelated graph algorithms", abstract.lower())
+            self.assertEqual(texts.attrs["canonical_abstract_count"], 1)
+
+    def test_no_abstract_uses_flagged_intro_fallback(self):
+        engine = ClusterTopicUnderstanding()
+        abstract, mode = engine._extract_abstract("Title\nThis paper studies graph algorithms and shortest paths." * 20, "Title")
+        self.assertIn(mode, {"intro_fallback", "title_only"})
+
+    def test_bibliography_is_not_in_abstract(self):
+        engine = ClusterTopicUnderstanding()
+        raw = "Abstract\nWe investigate retrieval augmented generation and knowledge graphs.\nReferences\nSmith et al. Graph retrieval systems."
+        abstract, mode = engine._extract_abstract(raw, "Some title")
+        self.assertNotIn("Smith", abstract)
+
+    def test_detects_internal_subtopics_without_changing_parent_group(self):
+        rows = []
+        texts = []
+        for i in range(18):
+            doc_id = f"speech_{i}"
+            rows.append({"document_id": doc_id, "group_id": "one_parent_cluster", "title": f"Speech Recognition and Acoustic Models {i}"})
+            texts.append({"document_id": doc_id, "text": "Abstract\nSpeech recognition uses acoustic models, audio signals, speech synthesis and word error rate.\n1 Introduction\nMore."})
+        for i in range(18):
+            doc_id = f"graph_{i}"
+            rows.append({"document_id": doc_id, "group_id": "one_parent_cluster", "title": f"Graph Algorithms and Shortest Paths {i}"})
+            texts.append({"document_id": doc_id, "text": "Abstract\nGraph algorithms study shortest paths, graph traversal, lower bounds and approximation algorithms.\n1 Introduction\nMore."})
+        engine = ClusterTopicUnderstanding(TopicConfig(min_subtopic_group_size=24, min_subtopic_silhouette=0.10))
+        result = engine.fit_predict(pd.DataFrame(rows), pd.DataFrame(texts))
+        profile = result["profiles"].iloc[0]
+        self.assertEqual(profile["group_id"], "one_parent_cluster")
+        self.assertEqual(profile["topic_profile_status"], "INTERNAL_SUBTOPICS_DETECTED")
+        self.assertIn("Mixed research directions", profile["automatic_label"])
+        self.assertEqual(len(result["subtopics"]), 2)
+        self.assertEqual(result["subtopic_assignments"]["group_id"].nunique(), 1)
+
+    def test_topic_phrases_require_contiguous_multiword_concepts(self):
+        self.assertTrue(ClusterTopicUnderstanding._valid_phrase("speech recognition"))
+        self.assertTrue(ClusterTopicUnderstanding._valid_phrase("knowledge graphs"))
+        self.assertFalse(ClusterTopicUnderstanding._valid_phrase("retrieval"))
+        self.assertFalse(ClusterTopicUnderstanding._valid_phrase("information processing systems neurips"))
+        self.assertFalse(ClusterTopicUnderstanding._valid_phrase("set number"))
+
+
+if __name__ == "__main__":
+    unittest.main()

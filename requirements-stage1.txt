@@ -1,0 +1,2 @@
+# Pinned version used by the Stage 1 Leiden-vs-Louvain comparison.
+igraph==1.0.0

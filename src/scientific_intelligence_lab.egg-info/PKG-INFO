@@ -1,0 +1,22 @@
+Metadata-Version: 2.4
+Name: scientific-intelligence-lab
+Version: 1.0.0
+Summary: GPU-assisted scientific paper analytics workbench
+Requires-Python: <3.13,>=3.12
+Requires-Dist: sentence-transformers==6.2.0
+Requires-Dist: scikit-learn==1.9.1
+Requires-Dist: numpy<3,>=2.1
+Requires-Dist: scipy<2,>=1.14
+Requires-Dist: pandas<4,>=2.2
+Requires-Dist: pymupdf==2.1
+Requires-Dist: yake==0.7.3
+Requires-Dist: rake-nltk==1.0.6
+Requires-Dist: streamlit==1.67.0
+Requires-Dist: plotly<7,>=6.3
+Requires-Dist: psutil<8,>=7
+Requires-Dist: python-dotenv<2,>=1.1
+Requires-Dist: tqdm<5,>=4.67
+Requires-Dist: neo4j<7,>=6.4
+Requires-Dist: hdbscan<0.9,>=0.8.40
+Requires-Dist: umap-learn<0.7,>=0.5.12
+Requires-Dist: networkx<4,>=3.4

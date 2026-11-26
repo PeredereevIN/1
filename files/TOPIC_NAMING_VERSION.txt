@@ -1,0 +1,2 @@
+Topic Naming RU 1.2.1
+Separated naming-evidence confidence from profile coherence; evidence-sensitive Russian labels; VLA/ISAC concepts; candidate provenance; economic single-term recall.

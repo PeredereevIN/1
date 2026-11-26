@@ -1,0 +1,19 @@
+# Install the CUDA-enabled PyTorch wheel first using INSTALL.ps1.
+sentence-transformers==6.2.0
+scikit-learn==1.9.1
+numpy>=2.1,<3
+scipy>=1.14,<2
+pandas>=2.2,<4
+pymupdf==2.1
+yake==0.7.3
+rake-nltk==1.0.6
+streamlit==1.67.0
+plotly>=6.3,<7
+psutil>=7,<8
+python-dotenv>=1.1,<2
+tqdm>=4.67,<5
+neo4j>=6.4,<7
+
+hdbscan>=0.8.40,<0.9
+umap-learn>=0.5.12,<0.7
+networkx>=3.4,<4

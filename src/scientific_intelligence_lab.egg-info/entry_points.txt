@@ -1,0 +1,2 @@
+[console_scripts]
+sciintel = sciintel.cli:main

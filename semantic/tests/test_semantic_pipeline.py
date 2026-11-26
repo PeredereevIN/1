@@ -60,6 +60,86 @@ class PaperEvidenceTests(unittest.TestCase):
         self.assertEqual(bundle.stats["documents_with_abstract"], 2)
         self.assertEqual(bundle.text_sources, ["abstract", "abstract"])
 
+    def test_main_pipeline_sqlite_and_processed_text_are_primary_local_sources(self) -> None:
+        import sqlite3
+
+        processed = self.root / "data" / "processed"
+        docs = {
+            "doc-1": "Canonical abstract for document one. " * 5,
+            "doc-2": "Canonical abstract for document two. " * 5,
+        }
+        db_path = self.root / "data" / "silab.sqlite3"
+        with sqlite3.connect(db_path) as conn:
+            conn.execute("""
+                CREATE TABLE documents (
+                    id TEXT PRIMARY KEY,
+                    abstract TEXT NOT NULL DEFAULT '',
+                    text_path TEXT NOT NULL DEFAULT ''
+                )
+            """)
+            for doc_id, abstract in docs.items():
+                folder = processed / doc_id
+                folder.mkdir(parents=True)
+                text_path = folder / "document.txt"
+                text_path.write_text(
+                    "Paper title\n\nAbstract\n" + abstract + "\n\n1 Introduction\nFull body.",
+                    encoding="utf-8",
+                )
+                conn.execute(
+                    "INSERT INTO documents(id, abstract, text_path) VALUES (?, ?, ?)",
+                    (doc_id, abstract, str(text_path)),
+                )
+
+        base = pd.DataFrame([
+            {"document_id": "doc-1", "title": "Paper One"},
+            {"document_id": "doc-2", "title": "Paper Two"},
+        ])
+        with patch.object(paper_evidence, "_http_json") as mocked:
+            bundle = paper_evidence.collect_paper_evidence(
+                self.root, base, ["doc-1", "doc-2"], source="auto",
+                cache_path=self.root / "cache.json",
+            )
+        mocked.assert_not_called()
+        self.assertEqual(bundle.stats["sqlite_rows_matched"], 2)
+        self.assertEqual(bundle.stats["sqlite_abstract_records"], 2)
+        self.assertEqual(bundle.stats["processed_text_files_found"], 2)
+        self.assertEqual(bundle.stats["documents_with_abstract"], 2)
+        self.assertEqual(bundle.stats["documents_with_full_text"], 2)
+        self.assertIn("Canonical abstract for document one", bundle.by_id["doc-1"]["abstract"])
+        self.assertEqual(bundle.by_id["doc-2"]["source"], "sqlite_abstract")
+
+    def test_processed_text_recovers_abstract_when_sqlite_abstract_is_empty(self) -> None:
+        import sqlite3
+
+        folder = self.root / "data" / "processed" / "doc-processed"
+        folder.mkdir(parents=True)
+        text_path = folder / "document.txt"
+        abstract = "This processed PDF abstract contains the scientific objective, methods, and key findings in a sufficiently detailed description."
+        text_path.write_text(
+            "Paper title\n\nAbstract\n" + abstract + "\n\n1 Introduction\nThe full article begins here.",
+            encoding="utf-8",
+        )
+        with sqlite3.connect(self.root / "data" / "silab.sqlite3") as conn:
+            conn.execute("""
+                CREATE TABLE documents (
+                    id TEXT PRIMARY KEY,
+                    abstract TEXT NOT NULL DEFAULT '',
+                    text_path TEXT NOT NULL DEFAULT ''
+                )
+            """)
+            conn.execute(
+                "INSERT INTO documents(id, abstract, text_path) VALUES (?, '', ?)",
+                ("doc-processed", str(text_path)),
+            )
+        base = pd.DataFrame([{"document_id": "doc-processed", "title": "Paper title"}])
+        bundle = paper_evidence.collect_paper_evidence(
+            self.root, base, ["doc-processed"], source="local",
+        )
+        self.assertTrue(bundle.by_id["doc-processed"]["has_abstract"])
+        self.assertEqual(bundle.by_id["doc-processed"]["source"], "sqlite_processed_abstract")
+        self.assertIn("scientific objective", bundle.by_id["doc-processed"]["abstract"])
+        self.assertEqual(bundle.stats["processed_abstracts_extracted"], 1)
+
     def test_misaligned_ids_are_rejected(self) -> None:
         base = pd.DataFrame([{"document_id": "doc-1", "title": "Paper One"}])
         with self.assertRaisesRegex(ValueError, "не совпадает"):

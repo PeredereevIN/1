@@ -713,7 +713,7 @@ def collect_paper_evidence(
     # Use a persistent cache to avoid repeated API requests for already seen IDs.
     cache_path = cache_path or (root / "artifacts" / "cache" / "topic_abstracts" / "paper_abstract_cache.json")
     cache: dict[str, Any] = {"version": 1, "items": {}}
-    if source in {"auto", "openalex"} and cache_path.is_file():
+    if source in {"auto", "local", "openalex"} and cache_path.is_file():
         try:
             loaded = json.loads(cache_path.read_text(encoding="utf-8-sig"))
             if isinstance(loaded, dict) and isinstance(loaded.get("items"), dict):

@@ -15,6 +15,7 @@ import json
 import difflib
 import os
 import re
+import sqlite3
 import sys
 import time
 import urllib.error
@@ -242,6 +243,206 @@ def _extract_pdf_excerpt(path: Path) -> tuple[str, str]:
         if len(cleaned) >= 100:
             return cleaned, "pdf_abstract"
     return _clean_text(text, 2200), "pdf_frontmatter"
+
+
+
+
+def _extract_abstract_from_processed_text(value: str) -> str:
+    """Extract an abstract from text already produced by the main ingest pipeline."""
+    text = html.unescape(str(value or ""))
+    text = re.sub(r"\s+", " ", text).strip()
+    match = re.search(r"\babstract\b\s*[:.\-]?\s*", text, flags=re.I)
+    if not match:
+        return ""
+    tail = text[match.end():]
+    end = re.search(
+        r"\b(?:1\s+)?(?:introduction|keywords|index terms|1\.)\b",
+        tail,
+        flags=re.I,
+    )
+    candidate = tail[:end.start()] if end else tail[:5000]
+    candidate = _clean_text(candidate, 5000)
+    return candidate if len(candidate) >= 100 else ""
+
+
+def _read_text_prefix(path: Path, limit: int = 24000) -> str:
+    """Read a bounded prefix from a processed UTF-8 text file."""
+    try:
+        with path.open("r", encoding="utf-8-sig", errors="replace") as stream:
+            return _clean_text(stream.read(limit), limit=limit)
+    except (OSError, UnicodeError):
+        return ""
+
+
+def _processed_text_path(
+    root: Path, raw_path: Any, doc_id: str, configured_processed: str | None = None
+) -> Path | None:
+    """Resolve an ingest text_path, with the canonical processed/<document_id> fallback."""
+    candidates: list[Path] = []
+    raw = _as_text(raw_path)
+    if raw:
+        value = Path(raw)
+        candidates.append(value if value.is_absolute() else root / value)
+        if not value.is_absolute():
+            candidates.append(root / "data" / value)
+    processed_value = configured_processed or os.environ.get("SIL_PROCESSED", "data/processed")
+    processed_root = Path(processed_value)
+    if not processed_root.is_absolute():
+        processed_root = root / processed_root
+    candidates.append(processed_root / doc_id / "document.txt")
+    for candidate in candidates:
+        try:
+            resolved = candidate.resolve()
+            if resolved.is_file() and resolved.suffix.lower() == ".txt":
+                return resolved
+        except OSError:
+            continue
+    return None
+
+
+def _load_main_pipeline_evidence(
+    root: Path,
+    ids: list[str],
+    records: dict[str, dict[str, Any]],
+) -> dict[str, Any]:
+    """Read canonical abstracts and processed text from the main pipeline SQLite DB.
+
+    The main ingest pipeline stores documents.abstract and the path to
+    data/processed/<document_id>/document.txt in data/silab.sqlite3.
+    This is the primary local source; external metadata APIs are only for gaps.
+    """
+    env_values: dict[str, str] = {}
+    try:
+        from dotenv import dotenv_values
+        env_values = {
+            str(key): str(value)
+            for key, value in dotenv_values(root / ".env").items()
+            if key and value is not None
+        }
+    except ImportError:
+        pass
+
+    configured_db = os.environ.get("SIL_DB") or env_values.get("SIL_DB") or "data/silab.sqlite3"
+    configured_processed = (
+        os.environ.get("SIL_PROCESSED") or env_values.get("SIL_PROCESSED") or "data/processed"
+    )
+    db_path = Path(configured_db)
+    if not db_path.is_absolute():
+        db_path = root / db_path
+    stats: dict[str, Any] = {
+        "sqlite_path": str(db_path),
+        "sqlite_available": db_path.is_file(),
+        "sqlite_rows_matched": 0,
+        "sqlite_abstract_records": 0,
+        "processed_text_files_found": 0,
+        "processed_text_files_read": 0,
+        "processed_abstracts_extracted": 0,
+        "processed_text_read_errors": 0,
+        "local_corpus_priority": [
+            "data/silab.sqlite3:documents.abstract",
+            "documents.text_path -> data/processed/<document_id>/document.txt",
+            "data/inbox JSON sidecars and other local metadata",
+            "local abstract cache",
+            "OpenAlex/Crossref only for records with no local text",
+        ],
+    }
+    db_rows: dict[str, dict[str, Any]] = {}
+    if db_path.is_file():
+        try:
+            # URI mode=ro guarantees that semantic labeling cannot create or modify
+            # the main ingest database.
+            connection = sqlite3.connect(
+                f"{db_path.resolve().as_uri()}?mode=ro", uri=True, timeout=30
+            )
+            connection.row_factory = sqlite3.Row
+            try:
+                columns = {str(row[1]) for row in connection.execute("PRAGMA table_info(documents)")}
+                if "id" not in columns:
+                    raise RuntimeError("SQLite table documents has no id column")
+                select_columns = ["id"]
+                for optional in ("abstract", "text_path"):
+                    if optional in columns:
+                        select_columns.append(optional)
+                for offset in range(0, len(ids), 500):
+                    batch = ids[offset:offset + 500]
+                    if not batch:
+                        continue
+                    marks = ",".join("?" for _ in batch)
+                    query = f"SELECT {', '.join(select_columns)} FROM documents WHERE id IN ({marks})"
+                    for row in connection.execute(query, batch).fetchall():
+                        item = dict(row)
+                        db_rows[str(item.get("id", ""))] = item
+            finally:
+                connection.close()
+        except Exception as exc:
+            stats["sqlite_error"] = str(exc)
+            print(f"[WARN] Основная SQLite-база не прочитана ({db_path}): {exc}", file=sys.stderr)
+
+    stats["sqlite_rows_matched"] = len(db_rows)
+    for doc_id in ids:
+        db_row = db_rows.get(doc_id, {})
+        db_abstract = _clean_text(db_row.get("abstract", ""), 12000)
+        path = _processed_text_path(
+            root, db_row.get("text_path", ""), doc_id, configured_processed=configured_processed
+        )
+        if path:
+            stats["processed_text_files_found"] += 1
+            records[doc_id]["full_text_path"] = str(path)
+            records[doc_id]["has_full_text"] = True
+
+        existing_abstract = _clean_text(records[doc_id].get("abstract", ""), 12000)
+        abstract = db_abstract or existing_abstract
+        text_prefix = ""
+        extracted_abstract = ""
+        if path and not abstract:
+            text_prefix = _read_text_prefix(path)
+            if text_prefix:
+                stats["processed_text_files_read"] += 1
+                extracted_abstract = _extract_abstract_from_processed_text(text_prefix)
+                if extracted_abstract:
+                    stats["processed_abstracts_extracted"] += 1
+
+        if abstract:
+            records[doc_id].update({
+                "abstract": abstract,
+                "text": abstract,
+                "source": "sqlite_abstract" if db_abstract else records[doc_id].get("source", "local_abstract"),
+                "source_detail": (
+                    f"{db_path.relative_to(root) if db_path.is_relative_to(root) else db_path}"
+                    + (f"; {path.relative_to(root) if path.is_relative_to(root) else path}" if path else "")
+                ),
+                "has_abstract": True,
+                "has_full_text": bool(path),
+            })
+            if db_abstract:
+                stats["sqlite_abstract_records"] += 1
+        elif extracted_abstract:
+            records[doc_id].update({
+                "abstract": extracted_abstract,
+                "text": extracted_abstract,
+                "source": "sqlite_processed_abstract",
+                "source_detail": str(path.relative_to(root)) if path.is_relative_to(root) else str(path),
+                "has_abstract": True,
+                "has_full_text": True,
+            })
+        elif path:
+            if not text_prefix:
+                text_prefix = _read_text_prefix(path)
+                if text_prefix:
+                    stats["processed_text_files_read"] += 1
+            if text_prefix:
+                records[doc_id].update({
+                    "abstract": "",
+                    "text": text_prefix,
+                    "source": "sqlite_processed_text",
+                    "source_detail": str(path.relative_to(root)) if path.is_relative_to(root) else str(path),
+                    "has_abstract": False,
+                    "has_full_text": True,
+                })
+            else:
+                stats["processed_text_read_errors"] += 1
+
+    return stats
 
 
 def _http_json(url: str, timeout: int, user_agent: str, retries: int = 2) -> dict[str, Any]:
@@ -504,10 +705,15 @@ def collect_paper_evidence(
                         stats["local_pdf_records"] += 1
                         used_files.append(str(pdf_path.relative_to(root)))
 
+    # Read the main project's canonical SQLite/processed corpus before consulting APIs.
+    # Exact document_id (the PDF SHA-256 prefix) is the join key; no row-order matching.
+    if source in {"auto", "local"}:
+        stats.update(_load_main_pipeline_evidence(root, ids, records))
+
     # Use a persistent cache to avoid repeated API requests for already seen IDs.
     cache_path = cache_path or (root / "artifacts" / "cache" / "topic_abstracts" / "paper_abstract_cache.json")
     cache: dict[str, Any] = {"version": 1, "items": {}}
-    if source in {"auto", "openalex"} and cache_path.is_file():
+    if source in {"auto", "local", "openalex"} and cache_path.is_file():
         try:
             loaded = json.loads(cache_path.read_text(encoding="utf-8-sig"))
             if isinstance(loaded, dict) and isinstance(loaded.get("items"), dict):
@@ -938,6 +1144,7 @@ def collect_paper_evidence(
             "source_detail": str(record.get("source_detail", "")),
             "has_abstract": bool(record.get("has_abstract", False)),
             "has_full_text": bool(record.get("has_full_text", False)),
+            "full_text_path": str(record.get("full_text_path", "") or ""),
         }
     abstract_count = sum(1 for v in evidence_by_id.values() if v["has_abstract"])
     any_text_count = sum(1 for v in evidence_by_id.values() if v["source"] != "title_only")
@@ -945,6 +1152,7 @@ def collect_paper_evidence(
         "documents": len(ids),
         "documents_with_abstract": int(abstract_count),
         "documents_with_any_text": int(any_text_count),
+        "documents_with_full_text": int(sum(1 for v in evidence_by_id.values() if v["has_full_text"])),
         "documents_title_only": int(len(ids) - any_text_count),
         "abstract_source_counts": dict(Counter(v["source"] for v in evidence_by_id.values())),
         "cache_file": str(cache_path.relative_to(root)) if cache_path.is_relative_to(root) else str(cache_path),

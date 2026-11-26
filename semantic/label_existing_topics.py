@@ -194,7 +194,18 @@ def main() -> int:
     print(
         f"Аннотации: {evidence_bundle.stats['documents_with_abstract']}/{len(ids)}; "
         f"любой текст: {evidence_bundle.stats['documents_with_any_text']}/{len(ids)}; "
-        f"OpenAlex batches: {evidence_bundle.stats['openalex_batches']}"
+        f"полные тексты в data/processed: {evidence_bundle.stats.get('documents_with_full_text', 0)}/{len(ids)}"
+    )
+    print(
+        f"Основной корпус: SQLite {evidence_bundle.stats.get('sqlite_rows_matched', 0)}/{len(ids)}; "
+        f"аннотации из SQLite {evidence_bundle.stats.get('sqlite_abstract_records', 0)}; "
+        f"processed-текстов найдено {evidence_bundle.stats.get('processed_text_files_found', 0)}; "
+        f"аннотаций извлечено из processed {evidence_bundle.stats.get('processed_abstracts_extracted', 0)}"
+    )
+    print(
+        f"Внешние API: OpenAlex batches={evidence_bundle.stats['openalex_batches']}, "
+        f"title lookups={evidence_bundle.stats.get('openalex_title_lookups', 0)}; "
+        f"Crossref requests={evidence_bundle.stats.get('crossref_requests', 0)}"
     )
 
     source_cluster_ids = set(pd.to_numeric(source_profiles["cluster_id"], errors="raise").astype(int))
@@ -290,6 +301,8 @@ def main() -> int:
             "document_id": doc_id,
             "abstract_available": bool(item.get("has_abstract", False)),
             "text_available": item.get("source", "title_only") != "title_only",
+            "full_text_available": bool(item.get("has_full_text", False)),
+            "full_text_path": item.get("full_text_path", ""),
             "text_source": item.get("source", "title_only"),
             "source_detail": item.get("source_detail", ""),
             "abstract": item.get("abstract", ""),

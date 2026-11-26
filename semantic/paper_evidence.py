@@ -274,7 +274,9 @@ def _read_text_prefix(path: Path, limit: int = 24000) -> str:
         return ""
 
 
-def _processed_text_path(root: Path, raw_path: Any, doc_id: str) -> Path | None:
+def _processed_text_path(
+    root: Path, raw_path: Any, doc_id: str, configured_processed: str | None = None
+) -> Path | None:
     """Resolve an ingest text_path, with the canonical processed/<document_id> fallback."""
     candidates: list[Path] = []
     raw = _as_text(raw_path)
@@ -283,7 +285,7 @@ def _processed_text_path(root: Path, raw_path: Any, doc_id: str) -> Path | None:
         candidates.append(value if value.is_absolute() else root / value)
         if not value.is_absolute():
             candidates.append(root / "data" / value)
-    processed_value = os.environ.get("SIL_PROCESSED", "data/processed")
+    processed_value = configured_processed or os.environ.get("SIL_PROCESSED", "data/processed")
     processed_root = Path(processed_value)
     if not processed_root.is_absolute():
         processed_root = root / processed_root
@@ -309,7 +311,21 @@ def _load_main_pipeline_evidence(
     data/processed/<document_id>/document.txt in data/silab.sqlite3.
     This is the primary local source; external metadata APIs are only for gaps.
     """
-    configured_db = os.environ.get("SIL_DB", "data/silab.sqlite3")
+    env_values: dict[str, str] = {}
+    try:
+        from dotenv import dotenv_values
+        env_values = {
+            str(key): str(value)
+            for key, value in dotenv_values(root / ".env").items()
+            if key and value is not None
+        }
+    except ImportError:
+        pass
+
+    configured_db = os.environ.get("SIL_DB") or env_values.get("SIL_DB") or "data/silab.sqlite3"
+    configured_processed = (
+        os.environ.get("SIL_PROCESSED") or env_values.get("SIL_PROCESSED") or "data/processed"
+    )
     db_path = Path(configured_db)
     if not db_path.is_absolute():
         db_path = root / db_path
@@ -333,7 +349,11 @@ def _load_main_pipeline_evidence(
     db_rows: dict[str, dict[str, Any]] = {}
     if db_path.is_file():
         try:
-            connection = sqlite3.connect(str(db_path), timeout=30)
+            # URI mode=ro guarantees that semantic labeling cannot create or modify
+            # the main ingest database.
+            connection = sqlite3.connect(
+                f"{db_path.resolve().as_uri()}?mode=ro", uri=True, timeout=30
+            )
             connection.row_factory = sqlite3.Row
             try:
                 columns = {str(row[1]) for row in connection.execute("PRAGMA table_info(documents)")}
@@ -362,7 +382,9 @@ def _load_main_pipeline_evidence(
     for doc_id in ids:
         db_row = db_rows.get(doc_id, {})
         db_abstract = _clean_text(db_row.get("abstract", ""), 12000)
-        path = _processed_text_path(root, db_row.get("text_path", ""), doc_id)
+        path = _processed_text_path(
+            root, db_row.get("text_path", ""), doc_id, configured_processed=configured_processed
+        )
         if path:
             stats["processed_text_files_found"] += 1
             records[doc_id]["full_text_path"] = str(path)

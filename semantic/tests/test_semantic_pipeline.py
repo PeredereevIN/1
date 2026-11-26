@@ -140,6 +140,33 @@ class PaperEvidenceTests(unittest.TestCase):
         self.assertIn("scientific objective", bundle.by_id["doc-processed"]["abstract"])
         self.assertEqual(bundle.stats["processed_abstracts_extracted"], 1)
 
+    def test_local_mode_uses_cached_abstracts_without_remote_requests(self) -> None:
+        base = pd.DataFrame([
+            {"document_id": "doc-cache", "doi": "10.1234/cached", "title": "Cached paper"},
+        ])
+        cached_abstract = (
+            "A locally cached abstract with sufficient information about the research objective, "
+            "methodology, experiments, and principal results."
+        )
+        cache = self.root / "abstract-cache.json"
+        cache.write_text(json.dumps({
+            "version": 1,
+            "items": {
+                "doi:10.1234/cached": {
+                    "abstract": cached_abstract,
+                    "source": "abstract_crossref",
+                    "source_detail": "10.1234/cached",
+                }
+            },
+        }), encoding="utf-8")
+        with patch.object(paper_evidence, "_http_json") as mocked:
+            bundle = paper_evidence.collect_paper_evidence(
+                self.root, base, ["doc-cache"], source="local", cache_path=cache,
+            )
+        mocked.assert_not_called()
+        self.assertEqual(bundle.stats["cache_hits"], 1)
+        self.assertIn("locally cached abstract", bundle.by_id["doc-cache"]["abstract"])
+
     def test_misaligned_ids_are_rejected(self) -> None:
         base = pd.DataFrame([{"document_id": "doc-1", "title": "Paper One"}])
         with self.assertRaisesRegex(ValueError, "не совпадает"):
